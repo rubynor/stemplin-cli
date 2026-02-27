@@ -1,0 +1,698 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="0.1.0"
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+[[ -f "$HOME/.stemplinrc" ]] && source "$HOME/.stemplinrc"
+
+STEMPLIN_URL="${STEMPLIN_URL:-}"
+STEMPLIN_API_TOKEN="${STEMPLIN_API_TOKEN:-}"
+STEMPLIN_ORG_ID="${STEMPLIN_ORG_ID:-}"
+
+RAW=false
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+die() { echo "Error: $*" >&2; exit 1; }
+
+need_var() {
+  [[ -n "${!1:-}" ]] || die "$1 is not set. Export it or add it to ~/.stemplinrc"
+}
+
+_api() {
+  local method="$1" path="$2"
+  shift 2
+  local body=""
+  local -a extra_args=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --data) body="$2"; shift 2 ;;
+      *)      extra_args+=("$1"); shift ;;
+    esac
+  done
+
+  need_var STEMPLIN_URL
+  need_var STEMPLIN_API_TOKEN
+
+  local url="${STEMPLIN_URL}/api/v1${path}"
+
+  local -a curl_args=(
+    -s -w '\n%{http_code}'
+    -X "$method"
+    -H "Authorization: Bearer ${STEMPLIN_API_TOKEN}"
+    -H "Content-Type: application/json"
+    -H "Accept: application/json"
+  )
+
+  [[ -n "$STEMPLIN_ORG_ID" ]] && curl_args+=(-H "X-Organization-Id: ${STEMPLIN_ORG_ID}")
+  [[ -n "$body" ]] && curl_args+=(-d "$body")
+  curl_args+=("${extra_args[@]}" "$url")
+
+  local response
+  response=$(curl "${curl_args[@]}") || die "curl failed"
+
+  local http_code body_text
+  http_code=$(echo "$response" | tail -1)
+  body_text=$(echo "$response" | sed '$d')
+
+  case "$http_code" in
+    2[0-9][0-9])
+      if [[ "$http_code" == "204" ]]; then
+        echo "Deleted."
+        return 0
+      fi
+      echo "$body_text"
+      ;;
+    401) die "Unauthorized (401). Check STEMPLIN_API_TOKEN." ;;
+    403) die "Forbidden (403). You don't have access to this resource." ;;
+    404) die "Not found (404)." ;;
+    422)
+      local errors
+      errors=$(echo "$body_text" | jq -r '.errors[]? // .errors // "Validation failed"' 2>/dev/null || echo "$body_text")
+      die "Validation error (422): $errors"
+      ;;
+    *)
+      if echo "$body_text" | grep -q '<!DOCTYPE\|<html'; then
+        die "HTTP $http_code: Server returned HTML instead of JSON. Check STEMPLIN_URL and STEMPLIN_ORG_ID."
+      else
+        die "HTTP $http_code: $body_text"
+      fi
+      ;;
+  esac
+}
+
+_format_table() {
+  if $RAW; then
+    cat
+  else
+    jq -r "$1" | column -t -s $'\t'
+  fi
+}
+
+_format_json() {
+  if $RAW; then
+    cat
+  else
+    jq .
+  fi
+}
+
+_minutes_to_hm() {
+  local m="$1"
+  printf "%d:%02d" $((m / 60)) $((m % 60))
+}
+
+_today() { date +%Y-%m-%d; }
+
+# ---------------------------------------------------------------------------
+# me
+# ---------------------------------------------------------------------------
+
+cmd_me() {
+  local result
+  result=$(_api GET /users/me)
+  if $RAW; then
+    echo "$result"
+  else
+    echo "$result" | jq -r '"ID:\t\(.id)\nName:\t\(.name)\nEmail:\t\(.email)\nLocale:\t\(.locale)\nOrg:\t\(.current_organization.name // "none") (\(.current_organization.id // "-"))\nHas Token:\t\(if .has_api_token then "yes" else "no" end)"' | column -t -s $'\t'
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# orgs
+# ---------------------------------------------------------------------------
+
+cmd_orgs() {
+  local action="${1:-list}"; shift || true
+  case "$action" in
+    list)
+      _api GET /organizations | _format_table '
+        ["ID", "NAME", "CURRENCY"],
+        (.[] | [.id, .name, .currency // "-"])
+        | @tsv'
+      ;;
+    show)
+      [[ $# -ge 1 ]] || die "Usage: stemplin orgs show ID"
+      _api GET "/organizations/$1" | _format_json
+      ;;
+    *) die "Unknown orgs action: $action. Try: list, show" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# clients
+# ---------------------------------------------------------------------------
+
+cmd_clients() {
+  local action="${1:-list}"; shift || true
+  case "$action" in
+    list)
+      _api GET /clients | _format_table '
+        ["ID", "NAME"],
+        (.[] | [.id, .name])
+        | @tsv'
+      ;;
+    show)
+      [[ $# -ge 1 ]] || die "Usage: stemplin clients show ID"
+      _api GET "/clients/$1" | _format_json
+      ;;
+    create)
+      local name=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --name) name="$2"; shift 2 ;;
+          *) die "Unknown flag: $1" ;;
+        esac
+      done
+      [[ -n "$name" ]] || die "Usage: stemplin clients create --name NAME"
+      _api POST /clients --data "$(jq -n --arg n "$name" '{client: {name: $n}}')" | _format_json
+      ;;
+    update)
+      [[ $# -ge 1 ]] || die "Usage: stemplin clients update ID --name NAME"
+      local id="$1"; shift
+      local name=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --name) name="$2"; shift 2 ;;
+          *) die "Unknown flag: $1" ;;
+        esac
+      done
+      local payload='{}'
+      [[ -n "$name" ]] && payload=$(jq -n --arg n "$name" '{client: {name: $n}}')
+      _api PATCH "/clients/$id" --data "$payload" | _format_json
+      ;;
+    delete)
+      [[ $# -ge 1 ]] || die "Usage: stemplin clients delete ID"
+      _api DELETE "/clients/$1"
+      ;;
+    *) die "Unknown clients action: $action. Try: list, show, create, update, delete" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# projects
+# ---------------------------------------------------------------------------
+
+cmd_projects() {
+  local action="${1:-list}"; shift || true
+  case "$action" in
+    list)
+      _api GET /projects | _format_table '
+        ["ID", "NAME", "CLIENT", "BILLABLE", "RATE"],
+        (.[] | [.id, .name, .client_name // "-", (if .billable then "yes" else "no" end), .rate_currency // "-"])
+        | @tsv'
+      ;;
+    show)
+      [[ $# -ge 1 ]] || die "Usage: stemplin projects show ID"
+      _api GET "/projects/$1" | _format_json
+      ;;
+    create)
+      local name="" client_id="" rate="" billable="" desc="" tasks=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --name)     name="$2"; shift 2 ;;
+          --client)   client_id="$2"; shift 2 ;;
+          --rate)     rate="$2"; shift 2 ;;
+          --billable) billable="$2"; shift 2 ;;
+          --desc)     desc="$2"; shift 2 ;;
+          --tasks)    tasks="$2"; shift 2 ;;
+          *) die "Unknown flag: $1" ;;
+        esac
+      done
+      [[ -n "$name" ]] || die "Usage: stemplin projects create --name NAME [--client ID] [--rate AMOUNT] [--billable true|false] [--desc TEXT] [--tasks JSON]"
+
+      local payload
+      payload=$(jq -n \
+        --arg name "$name" \
+        --arg client_id "$client_id" \
+        --arg rate "$rate" \
+        --arg billable "$billable" \
+        --arg desc "$desc" \
+        --argjson tasks "${tasks:-null}" \
+        '{project: (
+          {name: $name}
+          + (if $client_id != "" then {client_id: ($client_id | tonumber)} else {} end)
+          + (if $rate != "" then {rate_currency: $rate} else {} end)
+          + (if $billable != "" then {billable: ($billable == "true")} else {} end)
+          + (if $desc != "" then {description: $desc} else {} end)
+          + (if $tasks != null then {assigned_tasks_attributes: $tasks} else {} end)
+        )}')
+      _api POST /projects --data "$payload" | _format_json
+      ;;
+    update)
+      [[ $# -ge 1 ]] || die "Usage: stemplin projects update ID [flags]"
+      local id="$1"; shift
+      local name="" client_id="" rate="" billable="" desc="" tasks=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --name)     name="$2"; shift 2 ;;
+          --client)   client_id="$2"; shift 2 ;;
+          --rate)     rate="$2"; shift 2 ;;
+          --billable) billable="$2"; shift 2 ;;
+          --desc)     desc="$2"; shift 2 ;;
+          --tasks)    tasks="$2"; shift 2 ;;
+          *) die "Unknown flag: $1" ;;
+        esac
+      done
+      local payload
+      payload=$(jq -n \
+        --arg name "$name" \
+        --arg client_id "$client_id" \
+        --arg rate "$rate" \
+        --arg billable "$billable" \
+        --arg desc "$desc" \
+        --argjson tasks "${tasks:-null}" \
+        '{project: (
+          {}
+          + (if $name != "" then {name: $name} else {} end)
+          + (if $client_id != "" then {client_id: ($client_id | tonumber)} else {} end)
+          + (if $rate != "" then {rate_currency: $rate} else {} end)
+          + (if $billable != "" then {billable: ($billable == "true")} else {} end)
+          + (if $desc != "" then {description: $desc} else {} end)
+          + (if $tasks != null then {assigned_tasks_attributes: $tasks} else {} end)
+        )}')
+      _api PATCH "/projects/$id" --data "$payload" | _format_json
+      ;;
+    delete)
+      [[ $# -ge 1 ]] || die "Usage: stemplin projects delete ID"
+      _api DELETE "/projects/$1"
+      ;;
+    *) die "Unknown projects action: $action. Try: list, show, create, update, delete" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# tasks
+# ---------------------------------------------------------------------------
+
+cmd_tasks() {
+  local action="${1:-list}"; shift || true
+  case "$action" in
+    list)
+      _api GET /tasks | _format_table '
+        ["ID", "NAME"],
+        (.[] | [.id, .name])
+        | @tsv'
+      ;;
+    show)
+      [[ $# -ge 1 ]] || die "Usage: stemplin tasks show ID"
+      _api GET "/tasks/$1" | _format_json
+      ;;
+    *) die "Unknown tasks action: $action. Try: list, show" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# time (time_regs)
+# ---------------------------------------------------------------------------
+
+cmd_time() {
+  local action="${1:-list}"; shift || true
+  case "$action" in
+    list)
+      local date="" from="" to="" project="" per_page=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --date)     date="$2"; shift 2 ;;
+          --from)     from="$2"; shift 2 ;;
+          --to)       to="$2"; shift 2 ;;
+          --project)  project="$2"; shift 2 ;;
+          --per-page) per_page="$2"; shift 2 ;;
+          *) die "Unknown flag: $1" ;;
+        esac
+      done
+
+      # Default to today if no date filter specified
+      [[ -z "$date" && -z "$from" && -z "$to" ]] && date="$(_today)"
+
+      local qs=""
+      [[ -n "$date" ]]     && qs="${qs}&date=${date}"
+      [[ -n "$from" ]]     && qs="${qs}&start_date=${from}"
+      [[ -n "$to" ]]       && qs="${qs}&end_date=${to}"
+      [[ -n "$project" ]]  && qs="${qs}&project_id=${project}"
+      [[ -n "$per_page" ]] && qs="${qs}&per_page=${per_page}"
+      qs="?${qs#&}"
+
+      _api GET "/time_regs${qs}" | if $RAW; then cat; else
+        jq -r '
+          ["ID", "DATE", "PROJECT", "TASK", "MIN", "NOTES", "ACTIVE"],
+          (.time_regs[] | [
+            .id,
+            .date_worked,
+            .project_name // "-",
+            .task_name // "-",
+            .minutes,
+            (.notes // "-" | if length > 30 then .[:30] + "..." else . end),
+            (if .active then "***" else "" end)
+          ]) | @tsv' | column -t -s $'\t'
+      fi
+      ;;
+    show)
+      [[ $# -ge 1 ]] || die "Usage: stemplin time show ID"
+      _api GET "/time_regs/$1" | _format_json
+      ;;
+    create)
+      local task="" minutes="" date="" notes=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --task)    task="$2"; shift 2 ;;
+          --minutes) minutes="$2"; shift 2 ;;
+          --date)    date="$2"; shift 2 ;;
+          --notes)   notes="$2"; shift 2 ;;
+          *) die "Unknown flag: $1" ;;
+        esac
+      done
+      [[ -n "$task" ]] || die "Usage: stemplin time create --task ASSIGNED_TASK_ID [--minutes N] [--date YYYY-MM-DD] [--notes TEXT]"
+
+      local payload
+      payload=$(jq -n \
+        --arg task "$task" \
+        --arg minutes "${minutes:-0}" \
+        --arg date "${date:-$(_today)}" \
+        --arg notes "$notes" \
+        '{time_reg: {
+          assigned_task_id: ($task | tonumber),
+          minutes: ($minutes | tonumber),
+          date_worked: $date
+        } + (if $notes != "" then {notes: $notes} else {} end)}')
+      _api POST /time_regs --data "$payload" | _format_json
+      ;;
+    update)
+      [[ $# -ge 1 ]] || die "Usage: stemplin time update ID [flags]"
+      local id="$1"; shift
+      local task="" minutes="" date="" notes=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --task)    task="$2"; shift 2 ;;
+          --minutes) minutes="$2"; shift 2 ;;
+          --date)    date="$2"; shift 2 ;;
+          --notes)   notes="$2"; shift 2 ;;
+          *) die "Unknown flag: $1" ;;
+        esac
+      done
+      local payload
+      payload=$(jq -n \
+        --arg task "$task" \
+        --arg minutes "$minutes" \
+        --arg date "$date" \
+        --arg notes "$notes" \
+        '{time_reg: (
+          {}
+          + (if $task != "" then {assigned_task_id: ($task | tonumber)} else {} end)
+          + (if $minutes != "" then {minutes: ($minutes | tonumber)} else {} end)
+          + (if $date != "" then {date_worked: $date} else {} end)
+          + (if $notes != "" then {notes: $notes} else {} end)
+        )}')
+      _api PATCH "/time_regs/$id" --data "$payload" | _format_json
+      ;;
+    delete)
+      [[ $# -ge 1 ]] || die "Usage: stemplin time delete ID"
+      _api DELETE "/time_regs/$1"
+      ;;
+    timer)
+      [[ $# -ge 1 ]] || die "Usage: stemplin time timer TIME_REG_ID"
+      _api PATCH "/time_regs/$1/timer" | _format_json
+      ;;
+    *) die "Unknown time action: $action. Try: list, show, create, update, delete, timer" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# users
+# ---------------------------------------------------------------------------
+
+cmd_users() {
+  local action="${1:-list}"; shift || true
+  case "$action" in
+    list)
+      _api GET /users | _format_table '
+        ["ID", "NAME", "EMAIL"],
+        (.[] | [.id, .name, .email])
+        | @tsv'
+      ;;
+    show)
+      [[ $# -ge 1 ]] || die "Usage: stemplin users show ID"
+      _api GET "/users/$1" | _format_json
+      ;;
+    me) cmd_me ;;
+    *) die "Unknown users action: $action. Try: list, show, me" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# reports
+# ---------------------------------------------------------------------------
+
+cmd_reports() {
+  local action="${1:-show}"; shift || true
+  case "$action" in
+    show)
+      local from="" to="" clients="" projects="" users="" tasks=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --from)     from="$2"; shift 2 ;;
+          --to)       to="$2"; shift 2 ;;
+          --clients)  clients="$2"; shift 2 ;;
+          --projects) projects="$2"; shift 2 ;;
+          --users)    users="$2"; shift 2 ;;
+          --tasks)    tasks="$2"; shift 2 ;;
+          *) die "Unknown flag: $1" ;;
+        esac
+      done
+
+      local qs=""
+      [[ -n "$from" ]]     && qs="${qs}&start_date=${from}"
+      [[ -n "$to" ]]       && qs="${qs}&end_date=${to}"
+      [[ -n "$clients" ]]  && qs="${qs}&client_ids=${clients}"
+      [[ -n "$projects" ]] && qs="${qs}&project_ids=${projects}"
+      [[ -n "$users" ]]    && qs="${qs}&user_ids=${users}"
+      [[ -n "$tasks" ]]    && qs="${qs}&task_ids=${tasks}"
+      qs="?${qs#&}"
+
+      local result
+      result=$(_api GET "/reports${qs}")
+
+      if $RAW; then
+        echo "$result"
+      else
+        local total_min total_entries
+        total_min=$(echo "$result" | jq -r '.total_minutes')
+        total_entries=$(echo "$result" | jq -r '.total_entries')
+        echo "Total: $(_minutes_to_hm "$total_min") ($total_entries entries)"
+        echo ""
+        echo "By Project:"
+        echo "$result" | jq -r '
+          ["PROJECT", "CLIENT", "HOURS", "ENTRIES"],
+          (.by_project[] | [
+            .project_name,
+            .client_name,
+            ((.total_minutes / 60 * 100 | round) / 100 | tostring) + "h",
+            .total_entries
+          ]) | @tsv' | column -t -s $'\t'
+        echo ""
+        echo "By User:"
+        echo "$result" | jq -r '
+          ["USER", "HOURS", "ENTRIES"],
+          (.by_user[] | [
+            .user_name,
+            ((.total_minutes / 60 * 100 | round) / 100 | tostring) + "h",
+            .total_entries
+          ]) | @tsv' | column -t -s $'\t'
+      fi
+      ;;
+    *) die "Unknown reports action: $action. Try: show" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# token
+# ---------------------------------------------------------------------------
+
+cmd_token() {
+  local action="${1:-}"; shift || true
+  case "$action" in
+    regenerate)
+      local result
+      result=$(_api PATCH /api_token)
+      if $RAW; then
+        echo "$result"
+      else
+        echo "New token: $(echo "$result" | jq -r '.api_token')"
+        echo "Update STEMPLIN_API_TOKEN in ~/.stemplinrc"
+      fi
+      ;;
+    *) die "Usage: stemplin token regenerate" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# help
+# ---------------------------------------------------------------------------
+
+cmd_help() {
+  local topic="${1:-}"
+  case "$topic" in
+    me)
+      cat <<'EOF'
+stemplin me — Show your profile, org, and API token.
+EOF
+      ;;
+    orgs)
+      cat <<'EOF'
+stemplin orgs list              List your organizations
+stemplin orgs show ID           Show organization details
+EOF
+      ;;
+    clients)
+      cat <<'EOF'
+stemplin clients list           List clients
+stemplin clients show ID        Show client details
+stemplin clients create         Create a client
+  --name NAME                   (required)
+stemplin clients update ID      Update a client
+  --name NAME
+stemplin clients delete ID      Soft-delete a client
+EOF
+      ;;
+    projects)
+      cat <<'EOF'
+stemplin projects list          List projects
+stemplin projects show ID       Show project with assigned tasks
+stemplin projects create        Create a project
+  --name NAME                   (required)
+  --client ID                   Client ID
+  --rate AMOUNT                 Rate in currency format (e.g. "150.00")
+  --billable true|false         Default: false
+  --desc TEXT                   Description
+  --tasks JSON                  assigned_tasks_attributes JSON array
+stemplin projects update ID     Update a project (same flags as create)
+stemplin projects delete ID     Soft-delete a project
+EOF
+      ;;
+    tasks)
+      cat <<'EOF'
+stemplin tasks list             List tasks in the organization
+stemplin tasks show ID          Show task details
+EOF
+      ;;
+    time)
+      cat <<'EOF'
+stemplin time list              List time entries (default: today)
+  --date YYYY-MM-DD             Single date
+  --from YYYY-MM-DD             Start date (use with --to)
+  --to YYYY-MM-DD               End date (use with --from)
+  --project ID                  Filter by project
+  --per-page N                  Results per page (default: 25)
+stemplin time show ID           Show a time entry
+stemplin time create            Create a time entry
+  --task ID                     Assigned task ID (required)
+  --minutes N                   Minutes worked (default: 0)
+  --date YYYY-MM-DD             Date (default: today)
+  --notes TEXT                  Notes
+stemplin time update ID         Update a time entry
+  --task ID                     Change assigned task
+  --minutes N                   Change minutes
+  --date YYYY-MM-DD             Change date
+  --notes TEXT                  Change notes
+stemplin time delete ID         Soft-delete a time entry
+stemplin time timer ID          Toggle timer on a time entry
+EOF
+      ;;
+    users)
+      cat <<'EOF'
+stemplin users list             List users in the organization
+stemplin users show ID          Show user details
+stemplin users me               Same as 'stemplin me'
+EOF
+      ;;
+    reports)
+      cat <<'EOF'
+stemplin reports show           Show time report
+  --from YYYY-MM-DD             Start date
+  --to YYYY-MM-DD               End date
+  --clients IDS                 Comma-separated client IDs
+  --projects IDS                Comma-separated project IDs
+  --users IDS                   Comma-separated user IDs
+  --tasks IDS                   Comma-separated task IDs
+EOF
+      ;;
+    token)
+      cat <<'EOF'
+stemplin token regenerate       Generate a new API token (invalidates old one)
+EOF
+      ;;
+    "")
+      cat <<EOF
+stemplin v${VERSION} — CLI for the Stemplin time tracking API
+
+Usage: stemplin [--raw] [--org ID] <command> [action] [flags]
+
+Commands:
+  me                            Show your profile
+  orgs    [list|show]           Organizations
+  clients [list|show|create|update|delete]
+  projects [list|show|create|update|delete]
+  tasks   [list|show]           Tasks
+  time    [list|show|create|update|delete|timer]
+  users   [list|show|me]        Users
+  reports [show]                Reports
+  token   [regenerate]          API token management
+  help    [command]             Show help
+
+Global flags:
+  --raw                         Output raw JSON (no formatting)
+  --org ID                      Set organization ID for this request
+
+Environment:
+  STEMPLIN_URL                  API base URL (e.g. https://stemplin.com)
+  STEMPLIN_API_TOKEN            Your API token
+  STEMPLIN_ORG_ID               Default organization ID (optional)
+
+Config file: ~/.stemplinrc (sourced automatically)
+EOF
+      ;;
+    *) die "No help for: $topic" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Main dispatch
+# ---------------------------------------------------------------------------
+
+[[ "${__TESTING__:-}" == "1" ]] && return 0 2>/dev/null || true
+
+# Parse global flags
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --raw)     RAW=true; shift ;;
+    --org)     STEMPLIN_ORG_ID="$2"; shift 2 ;;
+    --version) echo "stemplin v${VERSION}"; exit 0 ;;
+    --help|-h) cmd_help; exit 0 ;;
+    -*)        die "Unknown flag: $1. Try: stemplin help" ;;
+    *)         break ;;
+  esac
+done
+
+command="${1:-help}"
+shift || true
+
+case "$command" in
+  me)       cmd_me "$@" ;;
+  orgs)     cmd_orgs "$@" ;;
+  clients)  cmd_clients "$@" ;;
+  projects) cmd_projects "$@" ;;
+  tasks)    cmd_tasks "$@" ;;
+  time)     cmd_time "$@" ;;
+  users)    cmd_users "$@" ;;
+  reports)  cmd_reports "$@" ;;
+  token)    cmd_token "$@" ;;
+  help)     cmd_help "$@" ;;
+  *)        die "Unknown command: $command. Try: stemplin help" ;;
+esac
