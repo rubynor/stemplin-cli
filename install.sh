@@ -6,6 +6,7 @@ REPO_RAW="https://raw.githubusercontent.com/rubynor/stemplin-cli/main"
 BIN_DIR="$HOME/bin"
 SKILL_DIR="$HOME/.claude/skills"
 COMPLETION_DIR="${BASH_COMPLETION_USER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions}"
+ZSH_COMPLETION_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/zsh/site-functions"
 RC_FILE="$HOME/.stemplinrc"
 
 info()  { echo "  -> $*"; }
@@ -47,6 +48,11 @@ ok "Claude skill installed to $SKILL_DIR/stemplin-api.md"
 mkdir -p "$COMPLETION_DIR"
 fetch_file "completions/stemplin.bash" "$COMPLETION_DIR/stemplin"
 ok "Bash completions installed to $COMPLETION_DIR/stemplin"
+
+# 3b. Zsh completions
+mkdir -p "$ZSH_COMPLETION_DIR"
+fetch_file "completions/stemplin.zsh" "$ZSH_COMPLETION_DIR/_stemplin"
+ok "Zsh completions installed to $ZSH_COMPLETION_DIR/_stemplin"
 
 # 4. Config file
 if [[ ! -f "$RC_FILE" ]]; then
