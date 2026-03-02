@@ -15,11 +15,12 @@ if [[ -z "$_REAL_URL" ]] || [[ -z "$_REAL_TOKEN" ]] || [[ -z "$_REAL_ORG" ]]; th
   exit 0
 fi
 
-# Restore real env vars and real _api function
+# Restore real _api function and env vars (env vars AFTER source, since
+# sourcing the CLI re-reads ~/.stemplinrc which would overwrite them)
+__TESTING__=1 source "$CLI_PATH"
 export STEMPLIN_URL="$_REAL_URL"
 export STEMPLIN_API_TOKEN="$_REAL_TOKEN"
 export STEMPLIN_ORG_ID="$_REAL_ORG"
-__TESTING__=1 source "$CLI_PATH"
 unset -f _today
 
 # ---------------------------------------------------------------------------
@@ -88,5 +89,10 @@ cmd_clients delete "$client_id" >/dev/null
 _test "integration: reports show"
 output=$(cmd_reports show --from 2020-01-01 --to 2030-12-31)
 assert_contains "Total:" "$output" "reports show has total"
+
+_test "integration: reports detailed"
+output=$(cmd_reports detailed --from 2020-01-01 --to 2030-12-31)
+assert_contains "Total:" "$output" "reports detailed has total"
+assert_contains "Billable:" "$output" "reports detailed has billable"
 
 _print_summary
