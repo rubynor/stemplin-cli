@@ -8,6 +8,7 @@ SKILL_DIR="$HOME/.claude/skills"
 COMPLETION_DIR="${BASH_COMPLETION_USER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions}"
 ZSH_COMPLETION_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/zsh/site-functions"
 RC_FILE="$HOME/.stemplinrc"
+DEFAULT_URL="https://app.stemplin.com"
 
 info()  { echo "  -> $*"; }
 ok()    { echo "  [ok] $*"; }
@@ -59,12 +60,12 @@ if [[ ! -f "$RC_FILE" ]]; then
   echo ""
   read -rp "Create ~/.stemplinrc with your API config? [Y/n] " answer
   if [[ "${answer:-Y}" =~ ^[Yy]$ ]]; then
-    read -rp "  STEMPLIN_URL (e.g. https://stemplin.com): " url
+    read -rp "  STEMPLIN_URL (press Enter for default: $DEFAULT_URL): " url
     read -rp "  STEMPLIN_API_TOKEN: " token
     read -rp "  STEMPLIN_ORG_ID (optional, press Enter to skip): " org_id
 
     cat > "$RC_FILE" <<EOF
-export STEMPLIN_URL="${url}"
+export STEMPLIN_URL="${url:=$DEFAULT_URL}"
 export STEMPLIN_API_TOKEN="${token}"
 export STEMPLIN_ORG_ID="${org_id}"
 EOF
