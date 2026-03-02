@@ -15,7 +15,7 @@ bash install.sh
 **One-liner (downloads from GitHub):**
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/rubynor/stemplin-cli/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/rubynor/stemplin-cli/master/install.sh | bash
 ```
 
 The installer places:
@@ -34,7 +34,7 @@ export PATH="$HOME/bin:$PATH"
 Set these environment variables (or put them in `~/.stemplinrc`):
 
 ```bash
-export STEMPLIN_URL="https://stemplin.com"    # or http://localhost:3000
+export STEMPLIN_URL="https://app.stemplin.com" # or http://localhost:3000
 export STEMPLIN_API_TOKEN="your-token-here"
 export STEMPLIN_ORG_ID=""                       # optional
 ```
