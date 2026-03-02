@@ -51,11 +51,12 @@ ok "Bash completions installed to $COMPLETION_DIR/stemplin"
 # 4. Config file
 if [[ ! -f "$RC_FILE" ]]; then
   echo ""
-  read -rp "Create ~/.stemplinrc with your API config? [Y/n] " answer
+  read -rp "Create ~/.stemplinrc with your API config? [Y/n] " answer </dev/tty
   if [[ "${answer:-Y}" =~ ^[Yy]$ ]]; then
-    read -rp "  STEMPLIN_URL (e.g. https://stemplin.com): " url
-    read -rp "  STEMPLIN_API_TOKEN: " token
-    read -rp "  STEMPLIN_ORG_ID (optional, press Enter to skip): " org_id
+    read -rp "  STEMPLIN_URL [https://app.stemplin.com]: " url </dev/tty
+    url="${url:-https://app.stemplin.com}"
+    read -rp "  STEMPLIN_API_TOKEN: " token </dev/tty
+    read -rp "  STEMPLIN_ORG_ID (optional, press Enter to skip): " org_id </dev/tty
 
     cat > "$RC_FILE" <<EOF
 export STEMPLIN_URL="${url}"
