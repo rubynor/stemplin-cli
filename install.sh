@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_RAW="https://raw.githubusercontent.com/rubynor/stemplin-cli/master"
+REPO_RAW="https://raw.githubusercontent.com/rubynor/stemplin-cli/main"
 
 BIN_DIR="$HOME/bin"
 SKILL_DIR="$HOME/.claude/skills"

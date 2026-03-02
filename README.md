@@ -15,7 +15,7 @@ bash install.sh
 **One-liner (downloads from GitHub):**
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/rubynor/stemplin-cli/master/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/rubynor/stemplin-cli/main/install.sh | bash
 ```
 
 The installer places:
