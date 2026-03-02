@@ -13,9 +13,9 @@ ok()    { echo "  [ok] $*"; }
 warn()  { echo "  [!] $*"; }
 
 # Detect if running from a local checkout or via curl pipe
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" 2>/dev/null || echo ".")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-/dev/null}")" 2>/dev/null && pwd)" || SCRIPT_DIR=""
 LOCAL=false
-if [[ -f "$SCRIPT_DIR/bin/stemplin" ]]; then
+if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/bin/stemplin" ]]; then
   LOCAL=true
 fi
 
