@@ -8,7 +8,7 @@ _stemplin() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  commands="me orgs clients projects tasks time users reports token help"
+  commands="me orgs clients projects tasks time users reports token update help"
 
   # Global flags
   if [[ "$cur" == -* ]]; then
@@ -45,8 +45,9 @@ _stemplin() {
     tasks)    COMPREPLY=($(compgen -W "list show" -- "$cur")) ;;
     time)     COMPREPLY=($(compgen -W "list show create update delete timer" -- "$cur")) ;;
     users)    COMPREPLY=($(compgen -W "list show me" -- "$cur")) ;;
-    reports)  COMPREPLY=($(compgen -W "show" -- "$cur")) ;;
+    reports)  COMPREPLY=($(compgen -W "show detailed" -- "$cur")) ;;
     token)    COMPREPLY=($(compgen -W "regenerate" -- "$cur")) ;;
+    update)   COMPREPLY=($(compgen -W "--check" -- "$cur")) ;;
     help)     COMPREPLY=($(compgen -W "$commands" -- "$cur")) ;;
   esac
 

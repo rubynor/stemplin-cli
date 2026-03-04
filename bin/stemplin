@@ -111,6 +111,29 @@ _minutes_to_hm() {
 
 _today() { date +%Y-%m-%d; }
 
+_build_report_qs() {
+  local from="" to="" clients="" projects="" users="" tasks=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --from)     from="$2"; shift 2 ;;
+      --to)       to="$2"; shift 2 ;;
+      --clients)  clients="$2"; shift 2 ;;
+      --projects) projects="$2"; shift 2 ;;
+      --users)    users="$2"; shift 2 ;;
+      --tasks)    tasks="$2"; shift 2 ;;
+      *) die "Unknown flag: $1" ;;
+    esac
+  done
+  _REPORT_QS=""
+  [[ -n "$from" ]]     && _REPORT_QS="${_REPORT_QS}&start_date=${from}"
+  [[ -n "$to" ]]       && _REPORT_QS="${_REPORT_QS}&end_date=${to}"
+  [[ -n "$clients" ]]  && _REPORT_QS="${_REPORT_QS}&client_ids=${clients}"
+  [[ -n "$projects" ]] && _REPORT_QS="${_REPORT_QS}&project_ids=${projects}"
+  [[ -n "$users" ]]    && _REPORT_QS="${_REPORT_QS}&user_ids=${users}"
+  [[ -n "$tasks" ]]    && _REPORT_QS="${_REPORT_QS}&task_ids=${tasks}"
+  _REPORT_QS="?${_REPORT_QS#&}"
+}
+
 # ---------------------------------------------------------------------------
 # me
 # ---------------------------------------------------------------------------
@@ -454,30 +477,9 @@ cmd_reports() {
   local action="${1:-show}"; shift || true
   case "$action" in
     show)
-      local from="" to="" clients="" projects="" users="" tasks=""
-      while [[ $# -gt 0 ]]; do
-        case "$1" in
-          --from)     from="$2"; shift 2 ;;
-          --to)       to="$2"; shift 2 ;;
-          --clients)  clients="$2"; shift 2 ;;
-          --projects) projects="$2"; shift 2 ;;
-          --users)    users="$2"; shift 2 ;;
-          --tasks)    tasks="$2"; shift 2 ;;
-          *) die "Unknown flag: $1" ;;
-        esac
-      done
-
-      local qs=""
-      [[ -n "$from" ]]     && qs="${qs}&start_date=${from}"
-      [[ -n "$to" ]]       && qs="${qs}&end_date=${to}"
-      [[ -n "$clients" ]]  && qs="${qs}&client_ids=${clients}"
-      [[ -n "$projects" ]] && qs="${qs}&project_ids=${projects}"
-      [[ -n "$users" ]]    && qs="${qs}&user_ids=${users}"
-      [[ -n "$tasks" ]]    && qs="${qs}&task_ids=${tasks}"
-      qs="?${qs#&}"
-
+      _build_report_qs "$@"
       local result
-      result=$(_api GET "/reports${qs}")
+      result=$(_api GET "/reports${_REPORT_QS}")
 
       if $RAW; then
         echo "$result"
@@ -507,7 +509,33 @@ cmd_reports() {
           ]) | @tsv' | column -t -s $'\t'
       fi
       ;;
-    *) die "Unknown reports action: $action. Try: show" ;;
+    detailed)
+      _build_report_qs "$@"
+      local result
+      result=$(_api GET "/reports/detailed${_REPORT_QS}")
+
+      if $RAW; then
+        echo "$result"
+      else
+        local total_min total_billable
+        total_min=$(echo "$result" | jq -r '.total_minutes')
+        total_billable=$(echo "$result" | jq -r '.total_billable_minutes // 0')
+        echo "Total: $(_minutes_to_hm "$total_min")  Billable: $(_minutes_to_hm "$total_billable")"
+        echo ""
+        echo "$result" | jq -r '
+          ["DATE", "CLIENT", "PROJECT", "TASK", "PERSON", "HOURS", "NOTES"],
+          (.dates[] | .date as $date | .time_regs[] | [
+            $date,
+            .client_name // "-",
+            .project_name // "-",
+            .task_name // "-",
+            .user_name // "-",
+            ((.minutes / 60 * 100 | round) / 100 | tostring) + "h",
+            (.notes // "-" | if length > 30 then .[:30] + "..." else . end)
+          ]) | @tsv' | column -t -s $'\t'
+      fi
+      ;;
+    *) die "Unknown reports action: $action. Try: show, detailed" ;;
   esac
 }
 
@@ -530,6 +558,64 @@ cmd_token() {
       ;;
     *) die "Usage: stemplin token regenerate" ;;
   esac
+}
+
+# ---------------------------------------------------------------------------
+# update
+# ---------------------------------------------------------------------------
+
+REPO_RAW="https://raw.githubusercontent.com/rubynor/stemplin-cli/main"
+
+cmd_update() {
+  local check_only=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --check) check_only=true; shift ;;
+      *) die "Unknown flag: $1" ;;
+    esac
+  done
+
+  local tmp
+  tmp=$(mktemp) || die "Failed to create temp file"
+  trap 'rm -f "$tmp"' RETURN
+
+  curl -sSL "$REPO_RAW/bin/stemplin" -o "$tmp" || die "Failed to download latest version"
+
+  local remote_version
+  remote_version=$(grep -m1 '^VERSION=' "$tmp" | sed 's/VERSION="//;s/"//') || die "Failed to parse remote version"
+  [[ -n "$remote_version" ]] || die "Failed to parse remote version"
+
+  if [[ "$remote_version" == "$VERSION" ]]; then
+    echo "Already up to date (v${VERSION})."
+    return 0
+  fi
+
+  if $check_only; then
+    echo "Update available: v${VERSION} -> v${remote_version}"
+    return 0
+  fi
+
+  echo "Updating stemplin: v${VERSION} -> v${remote_version}..."
+
+  # Determine install paths (same as install.sh)
+  local bin_dir="$HOME/bin"
+  local skill_dir="$HOME/.claude/skills"
+  local completion_dir="${BASH_COMPLETION_USER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions}"
+
+  # 1. Binary — already downloaded, mv for atomic replace
+  mkdir -p "$bin_dir"
+  chmod +x "$tmp"
+  mv "$tmp" "$bin_dir/stemplin"
+
+  # 2. Claude skill
+  mkdir -p "$skill_dir"
+  curl -sSL "$REPO_RAW/skill/stemplin-api.md" -o "$skill_dir/stemplin-api.md" || echo "Warning: failed to update skill file"
+
+  # 3. Bash completions
+  mkdir -p "$completion_dir"
+  curl -sSL "$REPO_RAW/completions/stemplin.bash" -o "$completion_dir/stemplin" || echo "Warning: failed to update completions"
+
+  echo "Updated to v${remote_version}."
 }
 
 # ---------------------------------------------------------------------------
@@ -614,7 +700,10 @@ EOF
       ;;
     reports)
       cat <<'EOF'
-stemplin reports show           Show time report
+stemplin reports show           Show summary report (totals by project/user)
+stemplin reports detailed       Show detailed report (individual time entries)
+
+Both accept:
   --from YYYY-MM-DD             Start date
   --to YYYY-MM-DD               End date
   --clients IDS                 Comma-separated client IDs
@@ -626,6 +715,12 @@ EOF
     token)
       cat <<'EOF'
 stemplin token regenerate       Generate a new API token (invalidates old one)
+EOF
+      ;;
+    update)
+      cat <<'EOF'
+stemplin update                 Download and install the latest version
+stemplin update --check         Check for updates without installing
 EOF
       ;;
     "")
@@ -642,8 +737,9 @@ Commands:
   tasks   [list|show]           Tasks
   time    [list|show|create|update|delete|timer]
   users   [list|show|me]        Users
-  reports [show]                Reports
+  reports [show|detailed]       Reports
   token   [regenerate]          API token management
+  update  [--check]             Update to latest version
   help    [command]             Show help
 
 Global flags:
@@ -693,6 +789,7 @@ case "$command" in
   users)    cmd_users "$@" ;;
   reports)  cmd_reports "$@" ;;
   token)    cmd_token "$@" ;;
+  update)   cmd_update "$@" ;;
   help)     cmd_help "$@" ;;
   *)        die "Unknown command: $command. Try: stemplin help" ;;
 esac
